@@ -4,30 +4,43 @@ type PortfolioResponse = {
   ok: boolean;
   updatedAt: string;
   address: string;
+
   pricing?: {
-    taoUsd?: string; // "xx.xx"
-    source?: string;
+    taoUsd: string; // e.g. "288.51"
+    source: string; // e.g. "coingecko" | "taostats"
   };
+
   tao: { free: string; staked: string; total: string };
+
   root?: {
-    netuid: number;
+    netuid: 0;
     valueTao: string;
-    valueUsd?: string; // "xx.xx"
+    valueUsd: string; // e.g. "4013.63"
+    apy?: { oneDayPct: string; sevenDayPct: string; thirtyDayPct: string };
+  } | null;
+
+  apySummary?: {
+    root?: { oneDayPct: string; sevenDayPct: string; thirtyDayPct: string };
+    subnets?: { oneDayPct: string; sevenDayPct: string; thirtyDayPct: string };
   };
+
   subnets: Array<{
     netuid: number;
     name: string; // may be empty from API
     alphaBalance: string;
     alphaPriceTao: string; // may be empty from API
     valueTao: string;
-    valueUsd?: string; // "xx.xx"
+    valueUsd?: string; // "287.91" etc
+    apy?: { oneDayPct: string; sevenDayPct: string; thirtyDayPct: string };
   }>;
+
   totals: {
     totalValueTao: string;
-    totalValueUsd?: string; // "xx.xx"
+    totalValueUsd?: string; // "5508.45"
     subnetValueTao: string;
     taoValueTao: string;
   };
+
   error?: string;
 };
 
@@ -72,7 +85,7 @@ async function getSubnetNames(): Promise<Map<number, string>> {
   }
 }
 
-function toNum(x: string): number {
+function toNum(x: string | undefined | null): number {
   const n = Number(x);
   return Number.isFinite(n) ? n : 0;
 }
@@ -92,35 +105,37 @@ function fmtUsd(n: number): string {
   }).format(n);
 }
 
-function fmtUsdCompact(n: number): string {
+function fmtUsdFromString(s?: string): string {
+  const n = Number(s);
   if (!Number.isFinite(n)) return "—";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    notation: "compact",
-    maximumFractionDigits: 2,
-  }).format(n);
+  return fmtUsd(n);
+}
+
+function fmtPct(pctString: string | undefined): string {
+  const n = Number(pctString);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  return `${n.toFixed(2)}%`;
 }
 
 export default async function PortfolioPage() {
   const [data, nameMap] = await Promise.all([getPortfolio(), getSubnetNames()]);
 
-  // TAO/USD comes from our own API now
-  const taoUsd = toNum(String(data.pricing?.taoUsd ?? "0"));
+  // TAO/USD comes from the API payload now
+  const taoUsd = toNum(data?.pricing?.taoUsd);
 
-  // Prefer root from explicit API field; fallback to netuid 0 row in subnets
-  const rootFromApi = data.root ?? null;
-  const rootFromSubnets = (data.subnets ?? []).find((s) => s.netuid === 0) ?? null;
+  // Root position: prefer dedicated "root" object, fallback to netuid 0 in subnets array
+  const rootPosition =
+    data.root ??
+    ((data.subnets ?? []).find((s) => s.netuid === 0)
+      ? {
+          netuid: 0 as const,
+          valueTao: (data.subnets ?? []).find((s) => s.netuid === 0)?.valueTao ?? "0",
+          valueUsd: (data.subnets ?? []).find((s) => s.netuid === 0)?.valueUsd ?? "",
+          apy: (data.subnets ?? []).find((s) => s.netuid === 0)?.apy,
+        }
+      : null);
 
-  const rootValueTao = rootFromApi?.valueTao ?? rootFromSubnets?.valueTao ?? "0";
-  const rootValueUsd =
-    rootFromApi?.valueUsd ??
-    (taoUsd > 0 ? String((toNum(rootValueTao) * taoUsd).toFixed(2)) : "0");
-
-  // Enrich subnets:
-  // - name from /api/subnets if missing
-  // - price (TAO) = valueTao / alphaBalance if missing
-  // - USD value comes from API (or computed as fallback)
+  // Subnet positions (exclude netuid 0), enrich name + implied TAO price
   const subnetPositions = (data.subnets ?? [])
     .filter((s) => s.netuid !== 0)
     .map((s) => {
@@ -130,25 +145,25 @@ export default async function PortfolioPage() {
       const name = s.name?.trim() || fallbackName || `Subnet ${netuid}`;
 
       const alpha = toNum(s.alphaBalance);
-      const valueTaoNum = toNum(s.valueTao);
-      const computedPriceTao = alpha > 0 && valueTaoNum > 0 ? valueTaoNum / alpha : 0;
+      const valueTao = toNum(s.valueTao);
+      const impliedPriceTao = alpha > 0 && valueTao > 0 ? valueTao / alpha : 0;
 
-      const alphaPriceTao = s.alphaPriceTao?.trim() ? s.alphaPriceTao : fmtPriceTao(computedPriceTao);
-
-      // Prefer API-provided USD; fallback to computed
-      const apiUsd = toNum(String(s.valueUsd ?? "0"));
-      const valueUsdNum = apiUsd > 0 ? apiUsd : taoUsd > 0 ? valueTaoNum * taoUsd : NaN;
+      const alphaPriceTao = s.alphaPriceTao?.trim() ? s.alphaPriceTao : fmtPriceTao(impliedPriceTao);
 
       return {
         ...s,
         name,
         alphaPriceTao,
-        valueUsdNum,
       };
     });
 
-  const totalValueTaoNum = toNum(data?.totals?.totalValueTao ?? "0");
-  const totalValueUsdNum = toNum(String(data?.totals?.totalValueUsd ?? "0"));
+  const totalValueUsd = fmtUsdFromString(data?.totals?.totalValueUsd);
+
+  // If totals.totalValueUsd ever goes missing, compute it
+  const computedTotalUsd =
+    !data?.totals?.totalValueUsd && taoUsd > 0
+      ? fmtUsd(toNum(data?.totals?.totalValueTao) * taoUsd)
+      : null;
 
   return (
     <main className="min-h-screen px-4 py-8">
@@ -160,13 +175,10 @@ export default async function PortfolioPage() {
             <span className="text-zinc-300">{data.updatedAt}</span>
           </p>
           <p className="mt-1 text-xs text-zinc-500 break-all">Address: {data.address}</p>
-
           <p className="mt-1 text-xs text-zinc-600">
             TAO/USD:{" "}
-            <span className="text-zinc-400">
-              {taoUsd > 0 ? fmtUsd(taoUsd) : "—"}
-            </span>
-            {data.pricing?.source ? (
+            <span className="text-zinc-400">{taoUsd > 0 ? fmtUsd(taoUsd) : "—"}</span>
+            {data?.pricing?.source ? (
               <span className="text-zinc-600">{" "}• source: {data.pricing.source}</span>
             ) : null}
           </p>
@@ -179,72 +191,93 @@ export default async function PortfolioPage() {
           </div>
         ) : (
           <>
-            {/* Top Summary Cards */}
+            {/* Summary Cards */}
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
-                <div className="text-xs text-zinc-400">Total Value (TAO)</div>
-                <div className="mt-2 text-2xl font-semibold text-zinc-100">{data.totals.totalValueTao}</div>
-                <div className="mt-1 text-xs text-zinc-500">(TAO + subnets)</div>
-                <div className="mt-2 text-sm text-zinc-200">
-                  {Number.isFinite(totalValueUsdNum) ? fmtUsd(totalValueUsdNum) : "—"}
+                <div className="text-xs text-zinc-400">Total Value</div>
+                <div className="mt-2 text-2xl font-semibold text-zinc-100">
+                  {data.totals.totalValueTao}{" "}
+                  <span className="text-sm font-normal text-zinc-400">TAO</span>
                 </div>
+                <div className="mt-1 text-sm text-zinc-200">
+                  {data?.totals?.totalValueUsd ? totalValueUsd : computedTotalUsd ?? "—"}
+                </div>
+                <div className="mt-1 text-xs text-zinc-500">(TAO + staked positions)</div>
               </div>
 
               <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
                 <div className="text-xs text-zinc-400">TAO Free</div>
                 <div className="mt-2 text-2xl font-semibold text-zinc-100">{data.tao.free}</div>
                 <div className="mt-1 text-xs text-zinc-500">On-wallet balance</div>
-                <div className="mt-2 text-sm text-zinc-200">
-                  {taoUsd > 0 ? fmtUsd(toNum(data.tao.free) * taoUsd) : "—"}
-                </div>
               </div>
 
               <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
                 <div className="text-xs text-zinc-400">TAO Staked</div>
                 <div className="mt-2 text-2xl font-semibold text-zinc-100">{data.tao.staked}</div>
                 <div className="mt-1 text-xs text-zinc-500">Root + subnet stake (TAO value)</div>
-                <div className="mt-2 text-sm text-zinc-200">
-                  {taoUsd > 0 ? fmtUsd(toNum(data.tao.staked) * taoUsd) : "—"}
+                <div className="mt-2 text-xs text-zinc-400">
+                  Est. APY (1D):{" "}
+                  <span className="text-zinc-200">{fmtPct(data?.apySummary?.subnets?.oneDayPct)}</span>
+                  <span className="text-zinc-600">
+                    {" "}• root: {fmtPct(data?.apySummary?.root?.oneDayPct)}
+                  </span>
+                </div>
+                <div className="mt-1 text-xs text-zinc-500">
+                  7D: {fmtPct(data?.apySummary?.subnets?.sevenDayPct)} • 30D: {fmtPct(data?.apySummary?.subnets?.thirtyDayPct)}
                 </div>
               </div>
             </div>
 
-            {/* Root Stake Card */}
-            <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium text-zinc-100">Root Stake</div>
-                  <div className="mt-1 text-xs text-zinc-500">Staked TAO delegated to Root (netuid 0)</div>
-                </div>
-              </div>
-
-              <div className="mt-4 grid gap-4 sm:grid-cols-3">
-                <div>
-                  <div className="text-xs text-zinc-400">Staked TAO</div>
-                  <div className="mt-1 text-lg font-medium text-zinc-100">{rootValueTao}</div>
-                  <div className="mt-1 text-xs text-zinc-500">
-                    {taoUsd > 0 ? fmtUsd(toNum(rootValueUsd)) : "—"}
+            {/* Root Stake */}
+            {rootPosition ? (
+              <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-zinc-100">Root Stake</div>
+                    <div className="mt-1 text-xs text-zinc-500">
+                      Staked TAO delegated to Root (netuid 0)
+                    </div>
                   </div>
                 </div>
 
-                <div>
-                  <div className="text-xs text-zinc-400">Price</div>
-                  <div className="mt-1 text-lg font-medium text-zinc-100">1 TAO</div>
-                </div>
+                <div className="mt-4 grid gap-4 sm:grid-cols-4">
+                  <div>
+                    <div className="text-xs text-zinc-400">Staked (TAO)</div>
+                    <div className="mt-1 text-lg font-medium text-zinc-100">{rootPosition.valueTao}</div>
+                    <div className="mt-1 text-xs text-zinc-500">{fmtUsdFromString(rootPosition.valueUsd)}</div>
+                  </div>
 
-                <div>
-                  <div className="text-xs text-zinc-400">NetUID</div>
-                  <div className="mt-1 text-lg font-medium text-zinc-100">0</div>
+                  <div>
+                    <div className="text-xs text-zinc-400">Est. APY (1D)</div>
+                    <div className="mt-1 text-lg font-medium text-zinc-100">
+                      {fmtPct(rootPosition.apy?.oneDayPct)}
+                    </div>
+                    <div className="mt-1 text-xs text-zinc-500">
+                      7D: {fmtPct(rootPosition.apy?.sevenDayPct)} • 30D: {fmtPct(rootPosition.apy?.thirtyDayPct)}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-xs text-zinc-400">Price</div>
+                    <div className="mt-1 text-lg font-medium text-zinc-100">1 TAO</div>
+                  </div>
+
+                  <div>
+                    <div className="text-xs text-zinc-400">NetUID</div>
+                    <div className="mt-1 text-lg font-medium text-zinc-100">0</div>
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : null}
 
-            {/* Subnet Positions Table */}
+            {/* Subnet Positions */}
             <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-sm font-medium text-zinc-100">Subnet Positions</div>
-                  <div className="mt-1 text-xs text-zinc-500">Alpha balances + implied TAO pricing per subnet.</div>
+                  <div className="mt-1 text-xs text-zinc-500">
+                    Alpha balances + implied TAO pricing per subnet.
+                  </div>
                 </div>
                 <div className="text-xs text-zinc-500">{subnetPositions.length} positions</div>
               </div>
@@ -261,7 +294,9 @@ export default async function PortfolioPage() {
                         <th className="py-2 pr-4">Alpha</th>
                         <th className="py-2 pr-4">Price (TAO)</th>
                         <th className="py-2 pr-4">Value (TAO)</th>
-                        <th className="py-2 pr-0">Value (USD)</th>
+                        <th className="py-2 pr-4">Value (USD)</th>
+                        <th className="py-2 pr-4">Est. APY (1D)</th>
+                        <th className="py-2 pr-0">Est. APY (30D)</th>
                       </tr>
                     </thead>
                     <tbody className="text-zinc-200">
@@ -276,17 +311,16 @@ export default async function PortfolioPage() {
                             {s.alphaPriceTao ? s.alphaPriceTao : <span className="text-zinc-500">—</span>}
                           </td>
                           <td className="py-2 pr-4">{s.valueTao}</td>
-                          <td className="py-2 pr-0">
-                            {Number.isFinite(s.valueUsdNum) ? fmtUsd(s.valueUsdNum) : <span className="text-zinc-500">—</span>}
-                          </td>
+                          <td className="py-2 pr-4">{fmtUsdFromString(s.valueUsd)}</td>
+                          <td className="py-2 pr-4">{fmtPct(s.apy?.oneDayPct)}</td>
+                          <td className="py-2 pr-0">{fmtPct(s.apy?.thirtyDayPct)}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
 
                   <div className="mt-3 text-xs text-zinc-500">
-                    Price is implied as <span className="text-zinc-400">Value ÷ Alpha</span>. USD values use{" "}
-                    <span className="text-zinc-400">TAO/USD</span> returned by <span className="text-zinc-400">/api/portfolio</span>.
+                    Price is implied as <span className="text-zinc-400">Value ÷ Alpha</span>. APY is estimated per (validator hotkey, netuid).
                   </div>
                 </div>
               )}
