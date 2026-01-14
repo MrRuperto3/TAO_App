@@ -1,5 +1,21 @@
 export const dynamic = "force-dynamic";
 
+type HistoryPosition = {
+  positionType: "root" | "subnet";
+  netuid: number;
+  hotkey: string | null;
+  apy: {
+    oneDayPct: string;
+    sevenDayPct: string;
+    thirtyDayPct: string;
+  };
+};
+
+type HistoryResponse = {
+  ok: boolean;
+  positions: HistoryPosition[];
+};
+
 type PortfolioResponse = {
   ok: boolean;
   updatedAt: string;
@@ -12,12 +28,14 @@ type PortfolioResponse = {
 
   tao: { free: string; staked: string; total: string };
 
-  root?: {
-    netuid: 0;
-    valueTao: string;
-    valueUsd: string; // e.g. "4013.63"
-    apy?: { oneDayPct: string; sevenDayPct: string; thirtyDayPct: string };
-  } | null;
+  root?:
+    | {
+        netuid: 0;
+        valueTao: string;
+        valueUsd: string; // e.g. "4013.63"
+        apy?: { oneDayPct: string; sevenDayPct: string; thirtyDayPct: string };
+      }
+    | null;
 
   apySummary?: {
     root?: { oneDayPct: string; sevenDayPct: string; thirtyDayPct: string };
@@ -32,6 +50,7 @@ type PortfolioResponse = {
     valueTao: string;
     valueUsd?: string; // "287.91" etc
     apy?: { oneDayPct: string; sevenDayPct: string; thirtyDayPct: string };
+    hotkey?: string; // optional in UI type (present in API payload)
   }>;
 
   totals: {
@@ -63,6 +82,15 @@ function getBaseUrl() {
 async function getPortfolio(): Promise<PortfolioResponse> {
   const res = await fetch(`${getBaseUrl()}/api/portfolio`, { cache: "no-store" });
   return res.json();
+}
+
+async function getPortfolioHistory(): Promise<HistoryResponse> {
+  try {
+    const res = await fetch(`${getBaseUrl()}/api/portfolio/history?days=30`, { cache: "no-store" });
+    return (await res.json()) as HistoryResponse;
+  } catch {
+    return { ok: false, positions: [] };
+  }
 }
 
 async function getSubnetNames(): Promise<Map<number, string>> {
@@ -111,14 +139,41 @@ function fmtUsdFromString(s?: string): string {
   return fmtUsd(n);
 }
 
+// Existing “estimated APY” formatting (keeps prior behavior: hides <= 0)
 function fmtPct(pctString: string | undefined): string {
   const n = Number(pctString);
   if (!Number.isFinite(n) || n <= 0) return "—";
   return `${n.toFixed(2)}%`;
 }
 
+// Realized APY formatting: allow negative values (show them), but still fail-soft on missing/NaN
+function fmtPctAny(pctString: string | undefined | null): string {
+  if (!pctString || !pctString.trim()) return "—";
+  const n = Number(pctString);
+  if (!Number.isFinite(n)) return "—";
+  return `${n.toFixed(2)}%`;
+}
+
 export default async function PortfolioPage() {
-  const [data, nameMap] = await Promise.all([getPortfolio(), getSubnetNames()]);
+  const [data, nameMap, history] = await Promise.all([
+    getPortfolio(),
+    getSubnetNames(),
+    getPortfolioHistory(),
+  ]);
+
+  // Build realized APY lookup keyed by "positionType:netuid"
+  const realizedApyByKey = new Map<string, HistoryPosition["apy"]>();
+  if (history?.ok && Array.isArray(history.positions)) {
+    for (const p of history.positions) {
+      const key = `${p.positionType}:${p.netuid}`;
+      realizedApyByKey.set(key, p.apy);
+    }
+  }
+
+  const getRealizedApy = (positionType: "root" | "subnet", netuid: number) => {
+    const key = `${positionType}:${netuid}`;
+    return realizedApyByKey.get(key) ?? null;
+  };
 
   // TAO/USD comes from the API payload now
   const taoUsd = toNum(data?.pricing?.taoUsd);
@@ -135,6 +190,8 @@ export default async function PortfolioPage() {
         }
       : null);
 
+  const rootRealized = getRealizedApy("root", 0);
+
   // Subnet positions (exclude netuid 0), enrich name + implied TAO price
   const subnetPositions = (data.subnets ?? [])
     .filter((s) => s.netuid !== 0)
@@ -148,7 +205,9 @@ export default async function PortfolioPage() {
       const valueTao = toNum(s.valueTao);
       const impliedPriceTao = alpha > 0 && valueTao > 0 ? valueTao / alpha : 0;
 
-      const alphaPriceTao = s.alphaPriceTao?.trim() ? s.alphaPriceTao : fmtPriceTao(impliedPriceTao);
+      const alphaPriceTao = s.alphaPriceTao?.trim()
+        ? s.alphaPriceTao
+        : fmtPriceTao(impliedPriceTao);
 
       return {
         ...s,
@@ -176,8 +235,7 @@ export default async function PortfolioPage() {
           </p>
           <p className="mt-1 text-xs text-zinc-500 break-all">Address: {data.address}</p>
           <p className="mt-1 text-xs text-zinc-600">
-            TAO/USD:{" "}
-            <span className="text-zinc-400">{taoUsd > 0 ? fmtUsd(taoUsd) : "—"}</span>
+            TAO/USD: <span className="text-zinc-400">{taoUsd > 0 ? fmtUsd(taoUsd) : "—"}</span>
             {data?.pricing?.source ? (
               <span className="text-zinc-600">{" "}• source: {data.pricing.source}</span>
             ) : null}
@@ -223,7 +281,8 @@ export default async function PortfolioPage() {
                   </span>
                 </div>
                 <div className="mt-1 text-xs text-zinc-500">
-                  7D: {fmtPct(data?.apySummary?.subnets?.sevenDayPct)} • 30D: {fmtPct(data?.apySummary?.subnets?.thirtyDayPct)}
+                  7D: {fmtPct(data?.apySummary?.subnets?.sevenDayPct)} • 30D:{" "}
+                  {fmtPct(data?.apySummary?.subnets?.thirtyDayPct)}
                 </div>
               </div>
             </div>
@@ -253,13 +312,23 @@ export default async function PortfolioPage() {
                       {fmtPct(rootPosition.apy?.oneDayPct)}
                     </div>
                     <div className="mt-1 text-xs text-zinc-500">
-                      7D: {fmtPct(rootPosition.apy?.sevenDayPct)} • 30D: {fmtPct(rootPosition.apy?.thirtyDayPct)}
+                      7D: {fmtPct(rootPosition.apy?.sevenDayPct)} • 30D:{" "}
+                      {fmtPct(rootPosition.apy?.thirtyDayPct)}
                     </div>
                   </div>
 
                   <div>
-                    <div className="text-xs text-zinc-400">Price</div>
-                    <div className="mt-1 text-lg font-medium text-zinc-100">1 TAO</div>
+                    <div className="text-xs text-zinc-400">Realized APY</div>
+                    <div className="mt-1 text-sm font-medium text-zinc-100">
+                      1D: {fmtPctAny(rootRealized?.oneDayPct)}{" "}
+                      <span className="text-zinc-600">•</span>{" "}
+                      7D: {fmtPctAny(rootRealized?.sevenDayPct)}{" "}
+                      <span className="text-zinc-600">•</span>{" "}
+                      30D: {fmtPctAny(rootRealized?.thirtyDayPct)}
+                    </div>
+                    <div className="mt-1 text-xs text-zinc-500">
+                      Based on snapshot deltas (TAO terms). Shows — until enough history exists.
+                    </div>
                   </div>
 
                   <div>
@@ -275,9 +344,7 @@ export default async function PortfolioPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-sm font-medium text-zinc-100">Subnet Positions</div>
-                  <div className="mt-1 text-xs text-zinc-500">
-                    Alpha balances + implied TAO pricing per subnet.
-                  </div>
+                  <div className="mt-1 text-xs text-zinc-500">Alpha balances + implied TAO pricing per subnet.</div>
                 </div>
                 <div className="text-xs text-zinc-500">{subnetPositions.length} positions</div>
               </div>
@@ -296,31 +363,46 @@ export default async function PortfolioPage() {
                         <th className="py-2 pr-4">Value (TAO)</th>
                         <th className="py-2 pr-4">Value (USD)</th>
                         <th className="py-2 pr-4">Est. APY (1D)</th>
-                        <th className="py-2 pr-0">Est. APY (30D)</th>
+                        <th className="py-2 pr-4">Est. APY (30D)</th>
+                        <th className="py-2 pr-4">Realized APY (1D)</th>
+                        <th className="py-2 pr-4">Realized APY (7D)</th>
+                        <th className="py-2 pr-0">Realized APY (30D)</th>
                       </tr>
                     </thead>
                     <tbody className="text-zinc-200">
-                      {subnetPositions.map((s) => (
-                        <tr key={s.netuid} className="border-t border-zinc-800">
-                          <td className="py-2 pr-4">{s.netuid}</td>
-                          <td className="py-2 pr-4">
-                            {s.name ? <span className="text-zinc-100">{s.name}</span> : <span className="text-zinc-500">—</span>}
-                          </td>
-                          <td className="py-2 pr-4">{s.alphaBalance}</td>
-                          <td className="py-2 pr-4">
-                            {s.alphaPriceTao ? s.alphaPriceTao : <span className="text-zinc-500">—</span>}
-                          </td>
-                          <td className="py-2 pr-4">{s.valueTao}</td>
-                          <td className="py-2 pr-4">{fmtUsdFromString(s.valueUsd)}</td>
-                          <td className="py-2 pr-4">{fmtPct(s.apy?.oneDayPct)}</td>
-                          <td className="py-2 pr-0">{fmtPct(s.apy?.thirtyDayPct)}</td>
-                        </tr>
-                      ))}
+                      {subnetPositions.map((s) => {
+                        const realized = getRealizedApy("subnet", s.netuid);
+
+                        return (
+                          <tr key={s.netuid} className="border-t border-zinc-800">
+                            <td className="py-2 pr-4">{s.netuid}</td>
+                            <td className="py-2 pr-4">
+                              {s.name ? (
+                                <span className="text-zinc-100">{s.name}</span>
+                              ) : (
+                                <span className="text-zinc-500">—</span>
+                              )}
+                            </td>
+                            <td className="py-2 pr-4">{s.alphaBalance}</td>
+                            <td className="py-2 pr-4">
+                              {s.alphaPriceTao ? s.alphaPriceTao : <span className="text-zinc-500">—</span>}
+                            </td>
+                            <td className="py-2 pr-4">{s.valueTao}</td>
+                            <td className="py-2 pr-4">{fmtUsdFromString(s.valueUsd)}</td>
+                            <td className="py-2 pr-4">{fmtPct(s.apy?.oneDayPct)}</td>
+                            <td className="py-2 pr-4">{fmtPct(s.apy?.thirtyDayPct)}</td>
+                            <td className="py-2 pr-4">{fmtPctAny(realized?.oneDayPct)}</td>
+                            <td className="py-2 pr-4">{fmtPctAny(realized?.sevenDayPct)}</td>
+                            <td className="py-2 pr-0">{fmtPctAny(realized?.thirtyDayPct)}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
 
                   <div className="mt-3 text-xs text-zinc-500">
-                    Price is implied as <span className="text-zinc-400">Value ÷ Alpha</span>. APY is estimated per (validator hotkey, netuid).
+                    Price is implied as <span className="text-zinc-400">Value ÷ Alpha</span>. Estimated APY comes from
+                    current network data; realized APY is based on stored snapshots (TAO terms).
                   </div>
                 </div>
               )}

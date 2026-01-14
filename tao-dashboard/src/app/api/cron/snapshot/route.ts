@@ -49,7 +49,7 @@ async function snapshotExistsForUtcDay(address: string, capturedAtIso: string): 
     .where(
       and(
         eq(portfolioSnapshots.address, address),
-        sql`date_trunc('day', ${portfolioSnapshots.capturedAt}) = date_trunc('day', ${capturedAtIso}::timestamptz)`
+        sql`date_trunc('hour', ${portfolioSnapshots.capturedAt}) = date_trunc('hour', ${capturedAtIso}::timestamptz)`
       )
     )
     .limit(1);
