@@ -14,27 +14,19 @@ import {
 // Explicit enum to keep Root vs Subnet unambiguous
 export const positionTypeEnum = pgEnum("position_type", ["root", "subnet"]);
 
-export const portfolioSnapshots = pgTable(
-  "portfolio_snapshots",
-  {
-    id: uuid("id").defaultRandom().primaryKey(),
+export const portfolioSnapshots = pgTable("portfolio_snapshots", {
+  id: uuid("id").defaultRandom().primaryKey(),
 
-    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+  address: text("address").notNull(),
 
-    address: text("address").notNull(),
+  capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
 
-    taoUsd: numeric("tao_usd", { precision: 18, scale: 8 }).notNull(),
-    pricingSource: text("pricing_source").notNull(),
+  taoUsd: numeric("tao_usd", { precision: 30, scale: 18 }),
 
-    // Store raw portfolio payload for debugging/backfills
-    raw: jsonb("raw").notNull(),
-  },
-  (t) => ({
-    addressCapturedAtIdx: index(
-      "portfolio_snapshots_address_captured_at_idx"
-    ).on(t.address, t.capturedAt),
-  })
-);
+  totalValueTao: numeric("total_value_tao", { precision: 30, scale: 18 }),
+
+  totalValueUsd: numeric("total_value_usd", { precision: 30, scale: 18 }),
+});
 
 export const positionSnapshots = pgTable(
   "position_snapshots",
