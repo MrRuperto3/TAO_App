@@ -227,20 +227,47 @@ export default async function PortfolioPage() {
   return (
     <main className="min-h-screen px-4 py-8">
       <div className="mx-auto w-full max-w-5xl">
-        <div className="mb-6">
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Portfolio</h1>
-          <p className="mt-1 text-sm text-zinc-400">
-            Read-only wallet view (TAO + subnet tokens). Updated:{" "}
-            <span className="text-zinc-300">{data.updatedAt}</span>
-          </p>
-          <p className="mt-1 text-xs text-zinc-500 break-all">Address: {data.address}</p>
-          <p className="mt-1 text-xs text-zinc-600">
-            TAO/USD: <span className="text-zinc-400">{taoUsd > 0 ? fmtUsd(taoUsd) : "—"}</span>
-            {data?.pricing?.source ? (
-              <span className="text-zinc-600">{" "}• source: {data.pricing.source}</span>
-            ) : null}
-          </p>
-        </div>
+        <div className="mb-6 flex items-end justify-between gap-4">
+          <div>
+            <div className="inline-flex items-center gap-3">
+              <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
+                Portfolio
+              </h1>
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-gray-300">
+                TAO Dashboard
+              </span>
+            </div>
+
+            <p className="mt-1 text-sm text-zinc-400">
+              Read-only wallet view (TAO + subnet tokens). Updated:{" "}
+              <span className="text-zinc-300">{data.updatedAt}</span>
+            </p>
+
+            <p className="mt-1 text-xs text-zinc-500 break-all">
+              Address: {data.address}
+            </p>
+
+            <p className="mt-1 text-xs text-zinc-600">
+              TAO/USD:{" "}
+              <span className="text-zinc-400">
+                {taoUsd > 0 ? fmtUsd(taoUsd) : "—"}
+              </span>
+              {data?.pricing?.source ? (
+                <span className="text-zinc-600">
+                  {" "}• source: {data.pricing.source}
+                </span>
+              ) : null}
+            </p>
+          </div>
+
+  <a
+    href="/"
+    className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-gray-200 hover:bg-white/10 hover:text-white transition"
+  >
+    Home
+  </a>
+</div>
+
 
         {!data.ok ? (
           <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-red-200">
