@@ -225,8 +225,9 @@ export default async function PortfolioPage() {
       : null;
 
   return (
-    <main className="min-h-screen px-4 py-8">
-      <div className="mx-auto w-full max-w-5xl">
+    <main className="min-h-screen">
+      <div className="p-4 sm:p-6">
+       <div className="mx-auto w-full max-w-5xl">
         <div className="mb-6 flex items-end justify-between gap-4">
           <div>
             <div className="inline-flex items-center gap-3">
@@ -300,7 +301,7 @@ export default async function PortfolioPage() {
                 <div className="text-xs text-zinc-400">TAO Staked</div>
                 <div className="mt-2 text-2xl font-semibold text-zinc-100">{data.tao.staked}</div>
                 <div className="mt-1 text-xs text-zinc-500">Root + subnet stake (TAO value)</div>
-                <div className="mt-2 text-xs text-zinc-400">
+                <div className="mt-2 text-sm sm:text-xs text-zinc-400">
                   Est. APY (1D):{" "}
                   <span className="text-zinc-200">{fmtPct(data?.apySummary?.subnets?.oneDayPct)}</span>
                   <span className="text-zinc-600">
@@ -379,7 +380,7 @@ export default async function PortfolioPage() {
               {subnetPositions.length === 0 ? (
                 <div className="mt-4 text-sm text-zinc-400">No subnet positions yet.</div>
               ) : (
-                <div className="mt-4 overflow-x-auto">
+                <div className="mt-4 overflow-x-auto [-webkit-overflow-scrolling:touch]">
                   <table className="w-full text-left text-sm">
                     <thead className="text-xs text-zinc-500">
                       <tr>
@@ -436,6 +437,7 @@ export default async function PortfolioPage() {
             </div>
           </>
         )}
+       </div>
       </div>
     </main>
   );
