@@ -189,6 +189,31 @@ function fmtUsdFromString(s?: string): string {
   return fmtUsd(n);
 }
 
+function fmtPeriodEnd(iso: string): string {
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return iso;
+
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "America/Chicago",
+    hour12: true,
+  }).format(d);
+}
+
+function fmtEarnedPct(alphaEarnedStr: string, alphaStartStr: string): string {
+  const earned = Number(alphaEarnedStr);
+  const start = Number(alphaStartStr);
+
+  if (!Number.isFinite(earned) || !Number.isFinite(start) || start <= 0) return "—";
+
+  const pct = (earned / start) * 100;
+  return `${pct.toFixed(2)}%`;
+}
+
 // Existing “estimated APY” formatting (keeps prior behavior: hides <= 0)
 function fmtPct(pctString: string | undefined): string {
   const n = Number(pctString);
@@ -568,7 +593,8 @@ export default async function PortfolioPage() {
                           <th className="py-2 pr-4">Name</th>
                           <th className="py-2 pr-4">Alpha Start</th>
                           <th className="py-2 pr-4">Alpha End</th>
-                          <th className="py-2 pr-0">Alpha Earned</th>
+                          <th className="py-2 pr-4">Alpha Earned</th>
+                          <th className="py-2 pr-0">% Earned</th>
                         </tr>
                       </thead>
 
@@ -577,18 +603,16 @@ export default async function PortfolioPage() {
                           const name = nameMap.get(p.netuid) ?? `Subnet ${p.netuid}`;
 
                           return (
-                            <tr
-                              key={`${p.periodEnd}:${p.netuid}:${p.hotkey ?? ""}`}
-                              className="border-t border-zinc-800"
-                            >
-                              <td className="py-2 pr-4 text-xs text-zinc-400 tabular-nums">{p.periodEnd}</td>
+                            <tr key={`${p.periodEnd}:${p.netuid}:${p.hotkey ?? ""}`} className="border-t border-zinc-800">
+                              <td className="py-2 pr-4 text-xs text-zinc-400 tabular-nums">{fmtPeriodEnd(p.periodEnd)}</td>
                               <td className="py-2 pr-4 tabular-nums">{p.netuid}</td>
                               <td className="py-2 pr-4">
                                 <span className="text-zinc-100">{name}</span>
                               </td>
                               <td className="py-2 pr-4 tabular-nums">{fmtTao4FromString(p.alphaStart)}</td>
                               <td className="py-2 pr-4 tabular-nums">{fmtTao4FromString(p.alphaEnd)}</td>
-                              <td className="py-2 pr-0 tabular-nums">{fmtTao4FromString(p.alphaEarned)}</td>
+                              <td className="py-2 pr-4 tabular-nums">{fmtTao4FromString(p.alphaEarned)}</td>
+                              <td className="py-2 pr-0 tabular-nums">{fmtEarnedPct(p.alphaEarned, p.alphaStart)}</td>
                             </tr>
                           );
                         })}
