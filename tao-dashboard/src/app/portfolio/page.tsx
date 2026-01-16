@@ -73,6 +73,24 @@ type SubnetsApiResponse = {
   error?: string;
 };
 
+/** Snapshot alpha delta types (from stored snapshots) */
+type AlphaDeltaPeriod = {
+  periodStart: string;
+  periodEnd: string;
+  netuid: number;
+  hotkey: string | null;
+  alphaStart: string;
+  alphaEnd: string;
+  alphaEarned: string;
+};
+
+type AlphaDeltasResponse = {
+  ok: boolean;
+  hours?: number;
+  periods?: AlphaDeltaPeriod[];
+  error?: string;
+};
+
 function getBaseUrl() {
   if (process.env.NEXT_PUBLIC_BASE_URL) return process.env.NEXT_PUBLIC_BASE_URL;
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
@@ -112,6 +130,15 @@ async function getSubnetNames(): Promise<Map<number, string>> {
     return m;
   } catch {
     return new Map();
+  }
+}
+
+async function getAlphaDeltas(hours = 48): Promise<AlphaDeltasResponse> {
+  try {
+    const res = await fetch(`${getBaseUrl()}/api/portfolio/alpha-deltas?hours=${hours}`, { cache: "no-store" });
+    return (await res.json()) as AlphaDeltasResponse;
+  } catch {
+    return { ok: false, periods: [], error: "Failed to fetch alpha deltas." };
   }
 }
 
@@ -183,7 +210,12 @@ function makeHistoryKey(positionType: "root" | "subnet", netuid: number, hotkey:
 }
 
 export default async function PortfolioPage() {
-  const [data, nameMap, history] = await Promise.all([getPortfolio(), getSubnetNames(), getPortfolioHistory()]);
+  const [data, nameMap, history, alphaDeltas] = await Promise.all([
+    getPortfolio(),
+    getSubnetNames(),
+    getPortfolioHistory(),
+    getAlphaDeltas(48),
+  ]);
 
   // Build realized APY lookup keyed by "positionType:netuid:hotkey"
   const realizedApyByKey = new Map<string, HistoryPosition["apy"]>();
@@ -501,6 +533,73 @@ export default async function PortfolioPage() {
                       </div>
                     </div>
                   </>
+                )}
+              </div>
+
+              {/* Snapshot Alpha Earned (from stored snapshots) */}
+              <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-zinc-100">Snapshot Alpha Earned</div>
+                    <div className="mt-1 text-xs text-zinc-500">
+                      Alpha change per subnet position between consecutive snapshots (from cron-ingested history).
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-zinc-500">
+                    {alphaDeltas?.ok ? `Last ${alphaDeltas.hours ?? 48}h` : "Unavailable"}
+                  </div>
+                </div>
+
+                {!alphaDeltas?.ok ? (
+                  <div className="mt-4 text-sm text-zinc-400">
+                    Could not load snapshot deltas:{" "}
+                    <span className="text-zinc-500">{alphaDeltas?.error ?? "Unknown error"}</span>
+                  </div>
+                ) : (alphaDeltas.periods ?? []).length === 0 ? (
+                  <div className="mt-4 text-sm text-zinc-400">No snapshot deltas yet (need at least 2 snapshots).</div>
+                ) : (
+                  <div className="mt-4 overflow-x-auto [-webkit-overflow-scrolling:touch]">
+                    <table className="w-full text-left text-sm">
+                      <thead className="text-xs text-zinc-500">
+                        <tr>
+                          <th className="py-2 pr-4">Period End</th>
+                          <th className="py-2 pr-4">NetUID</th>
+                          <th className="py-2 pr-4">Name</th>
+                          <th className="py-2 pr-4">Alpha Start</th>
+                          <th className="py-2 pr-4">Alpha End</th>
+                          <th className="py-2 pr-0">Alpha Earned</th>
+                        </tr>
+                      </thead>
+
+                      <tbody className="text-zinc-200">
+                        {(alphaDeltas.periods ?? []).slice(0, 200).map((p) => {
+                          const name = nameMap.get(p.netuid) ?? `Subnet ${p.netuid}`;
+
+                          return (
+                            <tr
+                              key={`${p.periodEnd}:${p.netuid}:${p.hotkey ?? ""}`}
+                              className="border-t border-zinc-800"
+                            >
+                              <td className="py-2 pr-4 text-xs text-zinc-400 tabular-nums">{p.periodEnd}</td>
+                              <td className="py-2 pr-4 tabular-nums">{p.netuid}</td>
+                              <td className="py-2 pr-4">
+                                <span className="text-zinc-100">{name}</span>
+                              </td>
+                              <td className="py-2 pr-4 tabular-nums">{fmtTao4FromString(p.alphaStart)}</td>
+                              <td className="py-2 pr-4 tabular-nums">{fmtTao4FromString(p.alphaEnd)}</td>
+                              <td className="py-2 pr-0 tabular-nums">{fmtTao4FromString(p.alphaEarned)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+
+                    <div className="mt-3 text-xs text-zinc-500">
+                      This view is purely derived from stored snapshots. Negative values are possible during rebalances or stake
+                      moves.
+                    </div>
+                  </div>
                 )}
               </div>
             </>
