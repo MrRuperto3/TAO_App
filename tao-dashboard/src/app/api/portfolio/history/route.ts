@@ -108,7 +108,7 @@ function getBaseUrlFromRequest(req: Request): string {
 
   if (!host) {
     if (process.env.NODE_ENV === "development") return "http://localhost:3000";
-    throw new Error("Missing host headers for base URL resolution.");
+    throw new Error("Missing host headers for base URL resolution");
   }
 
   return `${proto}://${host}`;
