@@ -76,7 +76,12 @@ type SubnetsApiResponse = {
 function getBaseUrl() {
   if (process.env.NEXT_PUBLIC_BASE_URL) return process.env.NEXT_PUBLIC_BASE_URL;
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return "http://localhost:3000";
+
+  // ✅ Local dev fallback only
+  if (process.env.NODE_ENV === "development") return "http://localhost:3000";
+
+  // ❌ Never silently fall back to localhost in prod/preview
+  throw new Error("Missing base URL (set NEXT_PUBLIC_BASE_URL in Vercel).");
 }
 
 async function getPortfolio(): Promise<PortfolioResponse> {

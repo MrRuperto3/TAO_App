@@ -105,7 +105,12 @@ function isFlowLikely(series: SeriesPoint[]): boolean {
 function getBaseUrlFromRequest(req: Request): string {
   const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
   const proto = req.headers.get("x-forwarded-proto") ?? "https";
-  if (!host) return "http://localhost:3000";
+
+  if (!host) {
+    if (process.env.NODE_ENV === "development") return "http://localhost:3000";
+    throw new Error("Missing host headers for base URL resolution.");
+  }
+
   return `${proto}://${host}`;
 }
 

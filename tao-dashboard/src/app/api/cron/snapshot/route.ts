@@ -65,9 +65,21 @@ function getAuthSecret(req: Request): string | null {
 }
 
 function getBaseUrlFromRequest(req: Request): string {
-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
-  const proto = req.headers.get("x-forwarded-proto") ?? "https";
-  if (!host) return "http://localhost:3000";
+  const host =
+    req.headers.get("x-forwarded-host") ??
+    req.headers.get("host");
+
+  const proto =
+    req.headers.get("x-forwarded-proto") ??
+    "https";
+
+  if (!host) {
+    if (process.env.NODE_ENV === "development") {
+      return "http://localhost:3000";
+    }
+    throw new Error("Missing host headers for base URL resolution");
+  }
+
   return `${proto}://${host}`;
 }
 
@@ -121,6 +133,10 @@ async function takeSnapshot(req: Request) {
 
   // Fetch normalized portfolio data from your existing BFF
   const baseUrl = getBaseUrlFromRequest(req);
+
+  await fetch(`${baseUrl}/api/whatever`, {
+    cache: "no-store",
+  });
   const portfolioRes = await fetch(`${baseUrl}/api/portfolio`, { cache: "no-store" });
   const portfolioJson = (await portfolioRes.json()) as PortfolioResponse;
 
