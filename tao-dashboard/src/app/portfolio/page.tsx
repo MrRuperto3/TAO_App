@@ -120,6 +120,27 @@ function toNum(x: string | undefined | null): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Formats a TAO-denominated numeric value to exactly 4 decimal places.
+ * - Fail-soft: returns "—" if missing/NaN
+ * - Keeps trailing zeros for consistent table alignment (e.g., 1.2000)
+ */
+function fmtTao4FromString(s?: string | null): string {
+  if (s == null) return "—";
+  const n = Number(s);
+  if (!Number.isFinite(n)) return "—";
+  return n.toFixed(4);
+}
+
+/**
+ * Formats a TAO-denominated numeric value to exactly 4 decimal places.
+ * - Use when you already have a number
+ */
+function fmtTao4(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  return n.toFixed(4);
+}
+
 function fmtPriceTao(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return "";
   if (n >= 1) return n.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
@@ -385,17 +406,23 @@ export default async function PortfolioPage() {
                             <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
                               <div className="rounded-xl border border-white/10 bg-black/20 p-3">
                                 <div className="text-gray-400">Value (TAO)</div>
-                                <div className="mt-1 font-semibold tabular-nums text-gray-200">{s.valueTao}</div>
+                                <div className="mt-1 font-semibold tabular-nums text-gray-200">
+                                  {fmtTao4FromString(s.valueTao)}
+                                </div>
                               </div>
 
                               <div className="rounded-xl border border-white/10 bg-black/20 p-3">
                                 <div className="text-gray-400">Alpha</div>
-                                <div className="mt-1 font-semibold tabular-nums text-gray-200">{s.alphaBalance}</div>
+                                <div className="mt-1 font-semibold tabular-nums text-gray-200">
+                                  {fmtTao4FromString(s.alphaBalance)}
+                                </div>
                               </div>
 
                               <div className="rounded-xl border border-white/10 bg-black/20 p-3">
                                 <div className="text-gray-400">Price (TAO)</div>
-                                <div className="mt-1 font-semibold tabular-nums text-gray-200">{s.alphaPriceTao || "—"}</div>
+                                <div className="mt-1 font-semibold tabular-nums text-gray-200">
+                                  {s.alphaPriceTao ? fmtTao4FromString(s.alphaPriceTao) : "—"}
+                                </div>
                               </div>
 
                               <div className="rounded-xl border border-white/10 bg-black/20 p-3">
@@ -451,9 +478,11 @@ export default async function PortfolioPage() {
                                 <td className="py-2 pr-4">
                                   {s.name ? <span className="text-zinc-100">{s.name}</span> : <span className="text-zinc-500">—</span>}
                                 </td>
-                                <td className="py-2 pr-4">{s.alphaBalance}</td>
-                                <td className="py-2 pr-4">{s.alphaPriceTao ? s.alphaPriceTao : <span className="text-zinc-500">—</span>}</td>
-                                <td className="py-2 pr-4">{s.valueTao}</td>
+                                <td className="py-2 pr-4">{fmtTao4FromString(s.alphaBalance)}</td>
+                                <td className="py-2 pr-4">
+                                  {s.alphaPriceTao ? fmtTao4FromString(s.alphaPriceTao) : <span className="text-zinc-500">—</span>}
+                                </td>
+                                <td className="py-2 pr-4">{fmtTao4FromString(s.valueTao)}</td>
                                 <td className="py-2 pr-4">{fmtUsdFromString(s.valueUsd)}</td>
                                 <td className="py-2 pr-4">{fmtPct(s.apy?.oneDayPct)}</td>
                                 <td className="py-2 pr-4">{fmtPct(s.apy?.thirtyDayPct)}</td>
