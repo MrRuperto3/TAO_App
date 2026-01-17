@@ -239,7 +239,7 @@ export default async function PortfolioPage() {
     getPortfolio(),
     getSubnetNames(),
     getPortfolioHistory(),
-    getAlphaDeltas(48),
+    getAlphaDeltas(30 * 24),
   ]);
 
   // Build realized APY lookup keyed by "positionType:netuid:hotkey"
@@ -567,12 +567,15 @@ export default async function PortfolioPage() {
                   <div>
                     <div className="text-sm font-medium text-zinc-100">Snapshot Alpha Earned</div>
                     <div className="mt-1 text-xs text-zinc-500">
-                      Alpha change per subnet position between consecutive snapshots (from cron-ingested history).
+                      Daily snapshot deltas (alpha change per subnet position between consecutive snapshots).
                     </div>
                   </div>
 
                   <div className="text-xs text-zinc-500">
-                    {alphaDeltas?.ok ? `Last ${alphaDeltas.hours ?? 48}h` : "Unavailable"}
+                    {alphaDeltas?.ok
+                      ? `Last ${Math.round((alphaDeltas.hours ?? 720) / 24)} days`
+                       : "Unavailable"}
+
                   </div>
                 </div>
 
