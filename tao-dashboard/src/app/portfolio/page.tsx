@@ -140,6 +140,45 @@ type PerformanceSummaryResponse = {
   error?: string;
 };
 
+type CronStatusResponse =
+  | {
+      ok: true;
+      address: string;
+      expectedCadence: "daily" | string;
+      now: string;
+
+      lastSnapshotAt: string | null;
+      snapshotAgeDays: number | null;
+      snapshotStale: boolean;
+
+      coverageLast30: { expected: number; present: number; missing: number };
+      missingDatesUtc: string[];
+      streakDays: number;
+
+      lastCronRun: {
+        ranAt: string;
+        ok: boolean;
+        message: string | null;
+        durationMs: number | null;
+        snapshotsInserted: number | null;
+        positionsInserted: number | null;
+      } | null;
+    }
+  | {
+      ok: false;
+      error?: string;
+    };
+
+
+async function getCronStatus(): Promise<CronStatusResponse> {
+  try {
+    const res = await fetch(`${getBaseUrl()}/api/cron/status`, { cache: "no-store" });
+    return (await res.json()) as CronStatusResponse;
+  } catch {
+    return { ok: false, error: "Failed to fetch cron status." };
+  }
+}
+
 async function getPerformanceSummary(days = 30): Promise<PerformanceSummaryResponse> {
   try {
     const res = await fetch(`${getBaseUrl()}/api/portfolio/performance?days=${days}`, { cache: "no-store" });
@@ -190,6 +229,7 @@ async function getSubnetNames(): Promise<Map<number, string>> {
     return new Map();
   }
 }
+
 
 async function getAlphaDeltas(hours = 48): Promise<AlphaDeltasResponse> {
   try {
@@ -308,12 +348,13 @@ function makeHistoryKey(positionType: "root" | "subnet", netuid: number, hotkey:
 }
 
 export default async function PortfolioPage() {
-  const [data, nameMap, history, alphaDeltas, perf] = await Promise.all([
+  const [data, nameMap, history, alphaDeltas, perf, cron] = await Promise.all([
     getPortfolio(),
     getSubnetNames(),
     getPortfolioHistory(),
     getAlphaDeltas(30 * 24),
     getPerformanceSummary(30),
+    getCronStatus(),
   ]);
 
 
@@ -757,6 +798,93 @@ export default async function PortfolioPage() {
                 )}
               </div>
 
+
+              {/* Cron Health */}
+              <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-zinc-100">Cron Health</div>
+                    <div className="mt-1 text-xs text-zinc-500">Daily snapshot ingestion</div>
+                  </div>
+
+                  <div
+                    className={[
+                      "text-xs rounded-full px-2 py-1 border",
+                      !cron?.ok
+                        ? "border-white/10 bg-white/5 text-zinc-500"
+                        : cron.snapshotStale
+                        ? "border-red-500/30 bg-red-500/10 text-red-200"
+                        : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+                    ].join(" ")}
+                  >
+                    {!cron?.ok ? "Unavailable" : cron.snapshotStale ? "Stale" : "Live"}
+                  </div>
+                </div>
+
+                {!cron?.ok ? (
+                  <div className="mt-4 text-sm text-zinc-400">
+                    Could not load cron status{cron?.error ? (
+                      <>
+                        : <span className="text-zinc-500">{cron.error}</span>
+                      </>
+                    ) : (
+                      "."
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                    <div>
+                      <div className="text-xs text-zinc-400">Last Snapshot</div>
+                      <div className="mt-1 text-sm text-zinc-100 tabular-nums">
+                        {cron.lastSnapshotAt ? new Date(cron.lastSnapshotAt).toLocaleString() : "—"}
+                      </div>
+                      <div className="mt-1 text-xs text-zinc-500">
+                        Age:{" "}
+                        <span className={cron.snapshotStale ? "text-red-300" : "text-zinc-300"}>
+                          {cron.snapshotAgeDays != null ? `${cron.snapshotAgeDays} days` : "—"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-xs text-zinc-400">Coverage (30d)</div>
+                      <div className="mt-1 text-sm text-zinc-100 tabular-nums">
+                        {cron.coverageLast30
+                          ? `${cron.coverageLast30.present}/${cron.coverageLast30.expected} days`
+                          : "—"}
+                      </div>
+                      <div className="mt-1 text-xs text-zinc-500">
+                        Missing:{" "}
+                        <span className="tabular-nums">
+                          {cron.coverageLast30 ? cron.coverageLast30.missing : "—"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-xs text-zinc-400">Streak</div>
+                      <div className="mt-1 text-sm text-zinc-100 tabular-nums">
+                        {cron.streakDays != null ? `${cron.streakDays} days` : "—"}
+                      </div>
+                      <div className="mt-1 text-xs text-zinc-500">
+                        Last run:{" "}
+                        <span className="tabular-nums">
+                          {cron.lastCronRun?.ranAt ? new Date(cron.lastCronRun.ranAt).toLocaleString() : "—"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {(cron.missingDatesUtc?.length ?? 0) > 0 ? (
+                      <div className="sm:col-span-3">
+                        <div className="text-xs text-zinc-400">Missing dates (UTC)</div>
+                        <div className="mt-1 text-xs text-zinc-500">
+                          {(cron.missingDatesUtc ?? []).join(", ")}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
 
 
 
