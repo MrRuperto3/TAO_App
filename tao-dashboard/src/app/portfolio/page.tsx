@@ -91,6 +91,64 @@ type AlphaDeltasResponse = {
   error?: string;
 };
 
+type PerformanceSummaryResponse = {
+  ok: boolean;
+  days?: number;
+  endCapturedAt?: string;
+
+  kpis?: {
+    startTotalTao: string;
+    endTotalTao: string;
+    deltaTao: string;
+    returnTaoPct: string;
+
+    startTotalUsd: string;
+    endTotalUsd: string;
+    deltaUsd: string;
+    returnUsdPct: string;
+
+    // NEW: both versions so the UI can choose
+    alphaTaoImpactEstNet: string;
+    alphaTaoImpactEstStaking: string;
+
+    maxDrawdownPct: string;
+  } | null;
+
+  contributors?: Array<{
+    netuid: number;
+    hotkey: string | null;
+
+    // NEW: both versions
+    alphaEarnedNet: string;
+    alphaEarnedStakingEst: string;
+
+    taoImpactEstNet: string;
+    taoImpactEstStaking: string;
+
+    sharePctNet: string;
+    sharePctStaking: string;
+
+    flowLikelyPeriods: number;
+  }>;
+
+  daily?: Array<{
+    periodEnd: string;
+    deltaTao: string;
+    returnPctTao: string;
+  }>;
+
+  error?: string;
+};
+
+async function getPerformanceSummary(days = 30): Promise<PerformanceSummaryResponse> {
+  try {
+    const res = await fetch(`${getBaseUrl()}/api/portfolio/performance?days=${days}`, { cache: "no-store" });
+    return (await res.json()) as PerformanceSummaryResponse;
+  } catch {
+    return { ok: false, error: "Failed to fetch performance summary." };
+  }
+}
+
 function getBaseUrl() {
   if (process.env.NEXT_PUBLIC_BASE_URL) return process.env.NEXT_PUBLIC_BASE_URL;
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
@@ -229,18 +287,35 @@ function fmtPctAny(pctString: string | undefined | null): string {
   return `${n.toFixed(2)}%`;
 }
 
+function fmtSignedPct4(s?: string): string {
+  const n = Number(s);
+  if (!Number.isFinite(n) || s === "") return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}%`;
+}
+
+function fmtSignedTao4FromString(s?: string): string {
+  const n = Number(s);
+  if (!Number.isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(4)}`;
+}
+
+
 function makeHistoryKey(positionType: "root" | "subnet", netuid: number, hotkey: string | null) {
   // Root uses hotkey = null. Keep it explicit for deterministic keys.
   return `${positionType}:${netuid}:${hotkey ?? ""}`;
 }
 
 export default async function PortfolioPage() {
-  const [data, nameMap, history, alphaDeltas] = await Promise.all([
+  const [data, nameMap, history, alphaDeltas, perf] = await Promise.all([
     getPortfolio(),
     getSubnetNames(),
     getPortfolioHistory(),
     getAlphaDeltas(30 * 24),
+    getPerformanceSummary(30),
   ]);
+
 
   // Build realized APY lookup keyed by "positionType:netuid:hotkey"
   const realizedApyByKey = new Map<string, HistoryPosition["apy"]>();
@@ -376,6 +451,7 @@ export default async function PortfolioPage() {
                   </div>
                 </div>
               </div>
+
 
               {/* Root Stake */}
               {rootPosition ? (
@@ -560,6 +636,129 @@ export default async function PortfolioPage() {
                   </>
                 )}
               </div>
+
+
+              {/* Performance Summary */}
+              <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-zinc-100">Performance Summary</div>
+                    <div className="mt-1 text-xs text-zinc-500">
+                      Last 30 days • Snapshot-driven • Alpha values are staking-estimated (flow-filtered)
+                    </div>
+                  </div>
+                  <div className="text-xs text-zinc-500">{perf?.ok ? "Loaded" : "Unavailable"}</div>
+                </div>
+
+                {!perf?.ok || !perf?.kpis ? (
+                  <div className="mt-4 text-sm text-zinc-400">
+                    Could not load performance summary:{" "}
+                    <span className="text-zinc-500">{perf?.error ?? "Unknown error"}</span>
+                  </div>
+                ) : (
+                  <>
+                    {/* KPI row */}
+                    <div className="mt-4 grid gap-4 sm:grid-cols-4">
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="text-xs text-zinc-400">Return (TAO)</div>
+                        <div className="mt-2 text-lg font-semibold text-zinc-100">
+                          {fmtSignedPct4(perf.kpis.returnTaoPct)}
+                        </div>
+                        <div className="mt-1 text-xs text-zinc-500">
+                          Δ TAO:{" "}
+                          <span className="text-zinc-300 tabular-nums">
+                            {fmtSignedTao4FromString(perf.kpis.deltaTao)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="text-xs text-zinc-400">Return (USD)</div>
+                        <div className="mt-2 text-lg font-semibold text-zinc-100">
+                          {fmtSignedPct4(perf.kpis.returnUsdPct)}
+                        </div>
+                        <div className="mt-1 text-xs text-zinc-500">
+                          Δ USD:{" "}
+                          <span className="text-zinc-300 tabular-nums">
+                            {fmtUsd(Number(perf.kpis.deltaUsd))}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="text-xs text-zinc-400">Alpha Impact (staking est.)</div>
+                        <div className="mt-2 text-lg font-semibold text-zinc-100 tabular-nums">
+                          {fmtSignedTao4FromString(perf.kpis.alphaTaoImpactEstStaking)}{" "}
+                          <span className="text-xs font-normal text-zinc-400">TAO</span>
+                        </div>
+                        <div className="mt-1 text-xs text-zinc-500">
+                          Sum(alpha Δ × end-period price), excluding flow-like spikes
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="text-xs text-zinc-400">Max Drawdown (TAO)</div>
+                        <div className="mt-2 text-lg font-semibold text-zinc-100">
+                          {perf.kpis.maxDrawdownPct ? `${Number(perf.kpis.maxDrawdownPct).toFixed(2)}%` : "—"}
+                        </div>
+                        <div className="mt-1 text-xs text-zinc-500">Worst peak → trough</div>
+                      </div>
+                    </div>
+
+                    {/* Top contributors */}
+                    <div className="mt-5">
+                      <div className="text-xs text-zinc-400">Top Subnet Contributors (staking-est TAO impact)</div>
+
+                      {(perf.contributors ?? []).length === 0 ? (
+                        <div className="mt-2 text-sm text-zinc-400">No contributor data yet.</div>
+                      ) : (
+                        <div className="mt-2 overflow-x-auto [-webkit-overflow-scrolling:touch]">
+                          <table className="w-full text-left text-sm">
+                            <thead className="text-xs text-zinc-500">
+                              <tr>
+                                <th className="py-2 pr-4">NetUID</th>
+                                <th className="py-2 pr-4">Name</th>
+                                <th className="py-2 pr-4">Alpha Earned (est.)</th>
+                                <th className="py-2 pr-4">TAO Impact (est.)</th>
+                                <th className="py-2 pr-4">Share</th>
+                                <th className="py-2 pr-0">Flow Exclusions</th>
+                              </tr>
+                            </thead>
+
+                            <tbody className="text-zinc-200">
+                              {(perf.contributors ?? []).slice(0, 12).map((c) => {
+                                const name = nameMap.get(c.netuid) ?? `Subnet ${c.netuid}`;
+                                const share = Number(c.sharePctStaking);
+                                const flowExclusions = c.flowLikelyPeriods;
+
+                                return (
+                                  <tr key={`${c.netuid}:${c.hotkey ?? ""}`} className="border-t border-zinc-800">
+                                    <td className="py-2 pr-4 tabular-nums">{c.netuid}</td>
+                                    <td className="py-2 pr-4 text-zinc-100">{name}</td>
+                                    <td className="py-2 pr-4 tabular-nums">{fmtTao4FromString(c.alphaEarnedStakingEst)}</td>
+                                    <td className="py-2 pr-4 tabular-nums">{fmtSignedTao4FromString(c.taoImpactEstStaking)}</td>
+                                    <td className="py-2 pr-4 tabular-nums">{Number.isFinite(share) ? share.toFixed(1) : "—"}%</td>
+                                    <td className="py-2 pr-0 tabular-nums">
+                                      {flowExclusions > 0 ? flowExclusions : <span className="text-zinc-500">—</span>}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+
+                          <div className="mt-2 text-xs text-zinc-500">
+                            “Staking est.” excludes periods where alpha increased unusually fast (likely purchases/rebalances). Net changes are still stored in the DB; this is just a filtered view.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+
+
+
 
               {/* Snapshot Alpha Earned (from stored snapshots) */}
               <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
