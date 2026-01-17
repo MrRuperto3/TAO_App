@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "@/db";
-import { portfolioSnapshots, positionSnapshots } from "@/db/schema";
+import { cronRuns, portfolioSnapshots, positionSnapshots } from "@/db/schema";
 
 type PortfolioResponse = {
   ok: boolean;
@@ -51,7 +51,7 @@ function requireEnv(name: string): string {
 }
 
 function getAuthSecret(req: Request): string | null {
-  // Vercel cron: Authorization: Bearer <CRON_SECRET> :contentReference[oaicite:2]{index=2}
+  // Vercel cron: Authorization: Bearer <CRON_SECRET>
   const auth = req.headers.get("authorization");
   if (auth && auth.toLowerCase().startsWith("bearer ")) {
     return auth.slice("bearer ".length).trim();
@@ -65,13 +65,8 @@ function getAuthSecret(req: Request): string | null {
 }
 
 function getBaseUrlFromRequest(req: Request): string {
-  const host =
-    req.headers.get("x-forwarded-host") ??
-    req.headers.get("host");
-
-  const proto =
-    req.headers.get("x-forwarded-proto") ??
-    "https";
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  const proto = req.headers.get("x-forwarded-proto") ?? "https";
 
   if (!host) {
     if (process.env.NODE_ENV === "development") {
@@ -92,21 +87,139 @@ function toNetuid(x: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-async function snapshotExistsForUtcHour(opts: {
+/* ------------------------------ Retry Helpers ------------------------------ */
+
+type FetchRetryOpts = {
+  maxRetries?: number; // retries after first attempt
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  timeoutMs?: number;
+  retryOnStatuses?: number[];
+};
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function parseRetryAfterMs(res: Response): number | null {
+  const ra = res.headers.get("retry-after");
+  if (!ra) return null;
+
+  // Retry-After can be seconds or an HTTP date
+  const seconds = Number(ra);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+
+  const dateMs = Date.parse(ra);
+  if (Number.isFinite(dateMs)) {
+    const delta = dateMs - Date.now();
+    return delta > 0 ? delta : 0;
+  }
+
+  return null;
+}
+
+function computeBackoffMs(attempt: number, base: number, max: number) {
+  const exp = Math.min(max, base * Math.pow(2, attempt));
+  const jitter = Math.floor(Math.random() * 250); // 0-250ms
+  return exp + jitter;
+}
+
+async function fetchWithRetry(url: string, init?: RequestInit, opts?: FetchRetryOpts) {
+  const {
+    maxRetries = 6,
+    baseDelayMs = 750,
+    maxDelayMs = 20_000,
+    timeoutMs = 12_000,
+    retryOnStatuses = [429, 500, 502, 503, 504],
+  } = opts ?? {};
+
+  let lastErr: unknown = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+        cache: "no-store",
+      });
+
+      clearTimeout(t);
+
+      if (res.ok) return res;
+
+      // Most 4xx are non-retriable; 429 is retriable by default
+      if (!retryOnStatuses.includes(res.status)) {
+        return res;
+      }
+
+      // drain body so connections aren’t held
+      try {
+        await res.text();
+      } catch {}
+
+      const retryAfterMs = parseRetryAfterMs(res);
+      const waitMs = retryAfterMs ?? computeBackoffMs(attempt, baseDelayMs, maxDelayMs);
+
+      if (attempt < maxRetries) {
+        await sleep(waitMs);
+        continue;
+      }
+
+      return res;
+    } catch (err) {
+      clearTimeout(t);
+      lastErr = err;
+
+      const waitMs = computeBackoffMs(attempt, baseDelayMs, maxDelayMs);
+      if (attempt < maxRetries) {
+        await sleep(waitMs);
+        continue;
+      }
+    }
+  }
+
+  throw lastErr ?? new Error("fetchWithRetry failed");
+}
+
+function makeCachedJsonFetcher() {
+  const cache = new Map<string, any>();
+
+  return async <T>(url: string, init?: RequestInit, opts?: FetchRetryOpts): Promise<T> => {
+    if (cache.has(url)) return cache.get(url) as T;
+
+    const res = await fetchWithRetry(url, init, opts);
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status} from ${url}${body ? ` :: ${body.slice(0, 200)}` : ""}`);
+    }
+
+    const json = (await res.json()) as T;
+    cache.set(url, json);
+    return json;
+  };
+}
+
+/* ------------------------------ Snapshot Logic ----------------------------- */
+
+async function snapshotExistsForUtcDay(opts: {
   address: string;
   capturedAt: Date;
 }): Promise<boolean> {
   const { address, capturedAt } = opts;
 
-  // Compare hour buckets in UTC.
-  // date_trunc('hour', timestamptz) works as UTC with timestamptz inputs.
+  // Compare day buckets in UTC.
+  // date_trunc('day', timestamptz) buckets by UTC date for timestamptz.
   const rows = await db
     .select({ id: portfolioSnapshots.id })
     .from(portfolioSnapshots)
     .where(
       and(
         eq(portfolioSnapshots.address, address),
-        sql`date_trunc('hour', ${portfolioSnapshots.capturedAt}) = date_trunc('hour', ${capturedAt.toISOString()}::timestamptz)`
+        sql`date_trunc('day', ${portfolioSnapshots.capturedAt}) = date_trunc('day', ${capturedAt.toISOString()}::timestamptz)`
       )
     )
     .limit(1);
@@ -115,120 +228,162 @@ async function snapshotExistsForUtcHour(opts: {
 }
 
 async function takeSnapshot(req: Request) {
-  const address = requireEnv("COLDKEY_ADDRESS");
+  const startedAt = Date.now();
+  const ranAt = new Date();
 
-  const capturedAt = new Date();
+  let ok = false;
+  let skipped = false;
+  let message: string | null = null;
 
-  // hourly idempotency
-  const exists = await snapshotExistsForUtcHour({ address, capturedAt });
-  if (exists) {
-    return NextResponse.json({
-      ok: true,
-      skipped: true,
-      reason: "snapshot already exists for UTC hour",
-      address,
-      capturedAt: capturedAt.toISOString(),
+  let snapshotsInserted = 0;
+  let positionsInserted = 0;
+
+  try {
+    const address = requireEnv("COLDKEY_ADDRESS");
+    const capturedAt = new Date();
+
+    // hourly idempotency
+    const exists = await snapshotExistsForUtcDay({ address, capturedAt });
+    if (exists) {
+      skipped = true;
+      ok = true;
+      message = "Skipped: snapshot already exists for UTC day";
+
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        reason: "snapshot already exists for UTC day",
+        address,
+        capturedAt: capturedAt.toISOString(),
+      });
+    }
+
+    const baseUrl = getBaseUrlFromRequest(req);
+    const fetchJson = makeCachedJsonFetcher();
+
+    // Fetch normalized portfolio data from your existing BFF (with retry/backoff)
+    const portfolioJson = await fetchJson<PortfolioResponse>(`${baseUrl}/api/portfolio`, undefined, {
+      maxRetries: 6,
+      baseDelayMs: 750,
+      maxDelayMs: 20_000,
+      timeoutMs: 12_000,
+      retryOnStatuses: [429, 500, 502, 503, 504],
     });
-  }
 
-  // Fetch normalized portfolio data from your existing BFF
-  const baseUrl = getBaseUrlFromRequest(req);
+    if (!portfolioJson?.ok) {
+      // Fail with 502 so cron health clearly shows the snapshot ingest failed due to upstream
+      throw new Error(portfolioJson?.error ?? "Failed to fetch /api/portfolio");
+    }
 
-  await fetch(`${baseUrl}/api/whatever`, {
-    cache: "no-store",
-  });
-  const portfolioRes = await fetch(`${baseUrl}/api/portfolio`, { cache: "no-store" });
-  const portfolioJson = (await portfolioRes.json()) as PortfolioResponse;
+    // Use totals + pricing from the payload (strings)
+    const taoUsd = toStr(portfolioJson?.pricing?.taoUsd);
+    const totalValueTao = toStr(portfolioJson?.totals?.totalValueTao);
+    const totalValueUsd = toStr(portfolioJson?.totals?.totalValueUsd);
 
-  if (!portfolioJson?.ok) {
-    return NextResponse.json(
-      { ok: false, error: portfolioJson?.error ?? "Failed to fetch /api/portfolio" },
-      { status: 502 }
-    );
-  }
+    // Insert portfolio snapshot
+    const inserted = await db
+      .insert(portfolioSnapshots)
+      .values({
+        address,
+        capturedAt,
+        taoUsd,
+        totalValueTao,
+        totalValueUsd,
+      })
+      .returning({ id: portfolioSnapshots.id });
 
-  // Use totals + pricing from the payload (strings)
-  const taoUsd = toStr(portfolioJson?.pricing?.taoUsd);
-  const totalValueTao = toStr(portfolioJson?.totals?.totalValueTao);
-  const totalValueUsd = toStr(portfolioJson?.totals?.totalValueUsd);
+    const snapshotId = inserted[0]?.id;
+    if (!snapshotId) throw new Error("Failed to insert portfolio snapshot");
 
-  // Insert portfolio snapshot
-  const inserted = await db
-    .insert(portfolioSnapshots)
-    .values({
-      address,
-      capturedAt,
-      taoUsd,
-      totalValueTao,
-      totalValueUsd,
-    })
-    .returning({ id: portfolioSnapshots.id });
+    snapshotsInserted = 1;
 
-  const snapshotId = inserted[0]?.id;
-  if (!snapshotId) {
-    return NextResponse.json({ ok: false, error: "Failed to insert portfolio snapshot" }, { status: 500 });
-  }
+    // Root position: prefer dedicated root object; fallback to netuid 0 in subnets array
+    const rootFromRoot = portfolioJson.root ?? null;
+    const rootFromSubnets = portfolioJson.subnets?.find((s) => s.netuid === 0) ?? null;
 
-  // Root position: prefer dedicated root object; fallback to netuid 0 in subnets array
-  const rootFromRoot = portfolioJson.root ?? null;
-  const rootFromSubnets = portfolioJson.subnets?.find((s) => s.netuid === 0) ?? null;
+    const rootValueTao = toStr(rootFromRoot?.valueTao ?? rootFromSubnets?.valueTao ?? "0");
+    const rootValueUsd = toStr(rootFromRoot?.valueUsd ?? rootFromSubnets?.valueUsd ?? "0");
 
-  const rootValueTao = toStr(rootFromRoot?.valueTao ?? rootFromSubnets?.valueTao ?? "0");
-  const rootValueUsd = toStr(rootFromRoot?.valueUsd ?? rootFromSubnets?.valueUsd ?? "0");
+    const positionRows: Array<{
+      snapshotId: string;
+      positionType: "root" | "subnet";
+      netuid: number;
+      hotkey: string | null;
+      alphaBalance: string | null;
+      valueTao: string;
+      valueUsd: string;
+    }> = [];
 
-  const positionRows: Array<{
-    snapshotId: string;
-    positionType: "root" | "subnet";
-    netuid: number;
-    hotkey: string | null;
-    alphaBalance: string | null;
-    valueTao: string;
-    valueUsd: string;
-  }> = [];
-
-  // Always write root row
-  positionRows.push({
-    snapshotId,
-    positionType: "root",
-    netuid: 0,
-    hotkey: null,
-    alphaBalance: null,
-    valueTao: rootValueTao,
-    valueUsd: rootValueUsd,
-  });
-
-  // Subnet rows (exclude netuid 0)
-  for (const s of portfolioJson.subnets ?? []) {
-    const netuid = toNetuid((s as any)?.netuid);
-    if (netuid == null) continue;
-    if (netuid === 0) continue;
-
+    // Always write root row
     positionRows.push({
       snapshotId,
-      positionType: "subnet",
-      netuid,
-      hotkey: toStr((s as any)?.hotkey || "") || null,
-      alphaBalance: toStr((s as any)?.alphaBalance || "0"),
-      valueTao: toStr((s as any)?.valueTao || "0"),
-      valueUsd: toStr((s as any)?.valueUsd || "0"),
+      positionType: "root",
+      netuid: 0,
+      hotkey: null,
+      alphaBalance: null,
+      valueTao: rootValueTao,
+      valueUsd: rootValueUsd,
     });
-  }
 
-  if (positionRows.length > 0) {
-    await db.insert(positionSnapshots).values(positionRows);
-  }
+    // Subnet rows (exclude netuid 0)
+    for (const s of portfolioJson.subnets ?? []) {
+      const netuid = toNetuid((s as any)?.netuid);
+      if (netuid == null) continue;
+      if (netuid === 0) continue;
 
-  return NextResponse.json({
-    ok: true,
-    skipped: false,
-    address,
-    capturedAt: capturedAt.toISOString(),
-    snapshotId,
-    positionsInserted: positionRows.length,
-  });
+      positionRows.push({
+        snapshotId,
+        positionType: "subnet",
+        netuid,
+        hotkey: toStr((s as any)?.hotkey || "") || null,
+        alphaBalance: toStr((s as any)?.alphaBalance || "0"),
+        valueTao: toStr((s as any)?.valueTao || "0"),
+        valueUsd: toStr((s as any)?.valueUsd || "0"),
+      });
+    }
+
+    if (positionRows.length > 0) {
+      await db.insert(positionSnapshots).values(positionRows);
+      positionsInserted = positionRows.length;
+    }
+
+    ok = true;
+    message = `OK: inserted snapshot + ${positionsInserted} positions`;
+
+    return NextResponse.json({
+      ok: true,
+      skipped: false,
+      address,
+      capturedAt: capturedAt.toISOString(),
+      snapshotId,
+      positionsInserted,
+    });
+  } catch (err) {
+    const m = err instanceof Error ? err.message : "Unknown error";
+    message = `FAILED: ${m}`;
+
+    return NextResponse.json({ ok: false, error: m }, { status: 502 });
+  } finally {
+    const durationMs = Date.now() - startedAt;
+
+    // Best-effort logging (never break cron response)
+    try {
+      await db.insert(cronRuns).values({
+        job: "snapshot",
+        ranAt,
+        ok,
+        message,
+        durationMs,
+        snapshotsInserted,
+        positionsInserted,
+      });
+    } catch {
+      // fail-soft
+    }
+  }
 }
 
-// Vercel Cron uses GET requests :contentReference[oaicite:3]{index=3}
+// Vercel Cron uses GET requests
 export async function GET(req: Request) {
   const expected = requireEnv("CRON_SECRET");
   const got = getAuthSecret(req);
