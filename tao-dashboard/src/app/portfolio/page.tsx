@@ -169,6 +169,27 @@ type CronStatusResponse =
       error?: string;
     };
 
+type SignalsResponse = {
+  ok: boolean;
+  day: string | null;
+  signals: Array<{
+    id: string;
+    day: string;
+    netuid?: number;
+    severity: "INFO" | "WARN" | "CRITICAL";
+    type: string;
+    title: string;
+    why: string;
+    metrics?: Record<string, any>;
+  }>;
+  meta?: {
+    partial?: boolean;
+    missing?: string[];
+    heldNetuids?: number[];
+    note?: string;
+  };
+};
+
 
 async function getCronStatus(): Promise<CronStatusResponse> {
   try {
@@ -239,6 +260,16 @@ async function getAlphaDeltas(hours = 48): Promise<AlphaDeltasResponse> {
     return { ok: false, periods: [], error: "Failed to fetch alpha deltas." };
   }
 }
+
+async function getSignals(): Promise<SignalsResponse> {
+  try {
+    const res = await fetch(`${getBaseUrl()}/api/portfolio/signals`, { cache: "no-store" });
+    return (await res.json()) as SignalsResponse;
+  } catch {
+    return { ok: false, day: null, signals: [], meta: { partial: true, missing: ["Failed to fetch signals"] } };
+  }
+}
+
 
 function toNum(x: string | undefined | null): number {
   const n = Number(x);
@@ -348,13 +379,14 @@ function makeHistoryKey(positionType: "root" | "subnet", netuid: number, hotkey:
 }
 
 export default async function PortfolioPage() {
-  const [data, nameMap, history, alphaDeltas, perf, cron] = await Promise.all([
+  const [data, nameMap, history, alphaDeltas, perf, cron, signalsRes] = await Promise.all([
     getPortfolio(),
     getSubnetNames(),
     getPortfolioHistory(),
     getAlphaDeltas(30 * 24),
     getPerformanceSummary(30),
     getCronStatus(),
+    getSignals(),
   ]);
 
 
@@ -886,6 +918,149 @@ export default async function PortfolioPage() {
                 )}
               </div>
 
+
+
+              {/* Signals / Notifications */}
+              <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-medium text-zinc-100">Signals</div>
+                    <div className="mt-1 text-xs text-zinc-500">
+                      Daily, snapshot-driven alerts for held subnets. (V1: flow-based signals are active; emission/value shocks may appear once history exists.)
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-zinc-500">
+                    {signalsRes?.ok && signalsRes.day ? `Day: ${signalsRes.day}` : "Unavailable"}
+                  </div>
+                </div>
+
+                {!signalsRes?.ok ? (
+                  <div className="mt-4 text-sm text-zinc-400">
+                    Could not load signals{" "}
+                    <span className="text-zinc-500">{signalsRes?.meta?.missing?.[0] ? `(${signalsRes.meta.missing[0]})` : ""}</span>
+                  </div>
+                ) : (signalsRes.signals ?? []).length === 0 ? (
+                  <div className="mt-4 text-sm text-zinc-400">
+                    No signals triggered for today.
+                    {signalsRes?.meta?.note ? (
+                      <div className="mt-1 text-xs text-zinc-500">{signalsRes.meta.note}</div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <>
+                    {(() => {
+                      const sigs = signalsRes.signals ?? [];
+                      const counts = sigs.reduce(
+                        (acc, s) => {
+                          if (s.severity === "CRITICAL") acc.critical++;
+                          else if (s.severity === "WARN") acc.warn++;
+                          else acc.info++;
+                          return acc;
+                        },
+                        { critical: 0, warn: 0, info: 0 }
+                      );
+
+                      return (
+                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                          <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-1 text-red-200">
+                            {counts.critical} critical
+                          </span>
+                          <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-amber-200">
+                            {counts.warn} warn
+                          </span>
+                          <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-200">
+                            {counts.info} info
+                          </span>
+
+                          {signalsRes?.meta?.note ? (
+                            <span className="ml-1 text-zinc-500">{signalsRes.meta.note}</span>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Mobile list */}
+                    <div className="mt-4 space-y-3 sm:hidden">
+                      {(signalsRes.signals ?? []).slice(0, 50).map((s) => {
+                        const badge =
+                          s.severity === "CRITICAL"
+                            ? "border-red-500/30 bg-red-500/10 text-red-200"
+                            : s.severity === "WARN"
+                            ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
+                            : "border-blue-500/30 bg-blue-500/10 text-blue-200";
+
+                        const name = s.netuid != null ? nameMap.get(s.netuid) ?? `Subnet ${s.netuid}` : "Portfolio";
+
+                        return (
+                          <div key={s.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="text-sm font-semibold text-gray-100">{s.title}</div>
+                                <div className="mt-1 text-xs text-gray-400">{name}</div>
+                              </div>
+                              <span className={`rounded-full border px-2 py-1 text-[11px] ${badge}`}>{s.severity}</span>
+                            </div>
+
+                            <div className="mt-2 text-xs text-gray-300">{s.why}</div>
+
+                            {s.netuid != null ? (
+                              <div className="mt-2 text-[11px] text-gray-500">
+                                NetUID: <span className="text-gray-300 tabular-nums">{s.netuid}</span>
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Desktop table */}
+                    <div className="mt-4 hidden overflow-x-auto [-webkit-overflow-scrolling:touch] sm:block">
+                      <table className="w-full text-left text-sm">
+                        <thead className="text-xs text-zinc-500">
+                          <tr>
+                            <th className="py-2 pr-4">Severity</th>
+                            <th className="py-2 pr-4">NetUID</th>
+                            <th className="py-2 pr-4">Name</th>
+                            <th className="py-2 pr-0">Message</th>
+                          </tr>
+                        </thead>
+
+                        <tbody className="text-zinc-200">
+                          {(signalsRes.signals ?? []).slice(0, 100).map((s) => {
+                            const sevClass =
+                              s.severity === "CRITICAL"
+                                ? "text-red-200"
+                                : s.severity === "WARN"
+                                ? "text-amber-200"
+                                : "text-blue-200";
+
+                            const name = s.netuid != null ? nameMap.get(s.netuid) ?? `Subnet ${s.netuid}` : "Portfolio";
+
+                            return (
+                              <tr key={s.id} className="border-t border-zinc-800">
+                                <td className={`py-2 pr-4 text-xs font-semibold ${sevClass}`}>{s.severity}</td>
+                                <td className="py-2 pr-4 tabular-nums">
+                                  {s.netuid != null ? s.netuid : <span className="text-zinc-500">—</span>}
+                                </td>
+                                <td className="py-2 pr-4 text-zinc-100">{name}</td>
+                                <td className="py-2 pr-0">
+                                  <div className="text-zinc-100">{s.title}</div>
+                                  <div className="mt-0.5 text-xs text-zinc-400">{s.why}</div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+
+                      <div className="mt-2 text-xs text-zinc-500">
+                        V1 signals are informational and snapshot-driven. Expect more accurate baselines after ~14 days of history.
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
 
 
               {/* Snapshot Alpha Earned (from stored snapshots) */}

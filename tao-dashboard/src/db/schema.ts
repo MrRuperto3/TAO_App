@@ -53,9 +53,7 @@ export const positionSnapshots = pgTable(
     valueUsd: numeric("value_usd", { precision: 36, scale: 18 }).notNull(),
   },
   (t) => ({
-    snapshotIdIdx: index("position_snapshots_snapshot_id_idx").on(
-      t.snapshotId
-    ),
+    snapshotIdIdx: index("position_snapshots_snapshot_id_idx").on(t.snapshotId),
 
     typeNetuidIdx: index("position_snapshots_type_netuid_idx").on(
       t.positionType,
@@ -90,5 +88,60 @@ export const cronRuns = pgTable(
   },
   (t) => ({
     jobRanAtIdx: index("cron_runs_job_ran_at_idx").on(t.job, t.ranAt),
+  })
+);
+
+/**
+ * Daily subnet-level metrics used for signals/notifications.
+ * One row per (UTC day, netuid).
+ *
+ * day: UTC day key in YYYY-MM-DD form (matches your existing UTC-day idempotency).
+ * capturedAt: when the metrics were fetched (timestamptz).
+ */
+export const subnetMetricSnapshots = pgTable(
+  "subnet_metric_snapshots",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    // UTC day key, e.g. "2026-01-17"
+    day: text("day").notNull(),
+
+    // subnet id
+    netuid: integer("netuid").notNull(),
+
+    // when we captured the metric snapshot (timestamptz)
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+
+    // TAO Flow (24H): net staking flow into/out of subnet pool
+    flow24h: numeric("flow_24h", { precision: 36, scale: 18 }),
+
+    // Emission share percentage for the subnet (store as percent, e.g. 1.23 for 1.23%)
+    emissionPct: numeric("emission_pct", { precision: 36, scale: 18 }),
+
+    // Pool / market stats
+    price: numeric("price", { precision: 36, scale: 18 }),
+    liquidity: numeric("liquidity", { precision: 36, scale: 18 }),
+    taoVolume24h: numeric("tao_volume_24h", { precision: 36, scale: 18 }),
+
+    // Price change windows as percent (e.g. -12.34 for -12.34%)
+    priceChange1d: numeric("price_change_1d", { precision: 36, scale: 18 }),
+    priceChange1w: numeric("price_change_1w", { precision: 36, scale: 18 }),
+    priceChange1m: numeric("price_change_1m", { precision: 36, scale: 18 }),
+
+    // optional: stash raw payloads for debugging / provenance (keep nullable)
+    // raw: jsonb("raw"),
+  },
+  (t) => ({
+    dayNetuidUniq: uniqueIndex("subnet_metric_snapshots_day_netuid_uniq").on(
+      t.day,
+      t.netuid
+    ),
+
+    dayIdx: index("subnet_metric_snapshots_day_idx").on(t.day),
+    netuidIdx: index("subnet_metric_snapshots_netuid_idx").on(t.netuid),
+    dayNetuidIdx: index("subnet_metric_snapshots_day_netuid_idx").on(
+      t.day,
+      t.netuid
+    ),
   })
 );
