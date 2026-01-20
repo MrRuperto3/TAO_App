@@ -868,12 +868,24 @@ export default async function PortfolioPage() {
                     <div>
                       <div className="text-xs text-zinc-400">Last Snapshot</div>
                       <div className="mt-1 text-sm text-zinc-100 tabular-nums">
-                        {cron.lastSnapshotAt ? new Date(cron.lastSnapshotAt).toLocaleString() : "—"}
+                        {cron.lastSnapshotAt ? (
+                          <div className="space-y-0.5">
+                            <div className="text-zinc-100 tabular-nums">
+                              {new Date(cron.lastSnapshotAt).toLocaleString()}
+                            </div>
+                            <div className="text-[11px] text-zinc-500 tabular-nums">
+                              UTC: {new Date(cron.lastSnapshotAt).toISOString().replace(".000Z", "Z")}
+                            </div>
+                          </div>
+                        ) : (
+                          "—"
+                        )}
+
                       </div>
                       <div className="mt-1 text-xs text-zinc-500">
                         Age:{" "}
                         <span className={cron.snapshotStale ? "text-red-300" : "text-zinc-300"}>
-                          {cron.snapshotAgeDays != null ? `${cron.snapshotAgeDays} days` : "—"}
+                          {cron.snapshotAgeDays != null ? `${cron.snapshotAgeDays.toFixed(2)} days` : "—"}
                         </span>
                       </div>
                     </div>
@@ -914,10 +926,15 @@ export default async function PortfolioPage() {
                         </div>
                       </div>
                     ) : null}
+
+                    <div className="sm:col-span-3 mt-3 text-[11px] text-zinc-500">
+                      Cron Health is derived from stored snapshots using <span className="text-zinc-400">UTC-day bucketing</span>.
+                      Local times are shown for convenience only.
+                    </div>
+
                   </div>
                 )}
               </div>
-
 
 
               {/* Signals / Notifications */}
