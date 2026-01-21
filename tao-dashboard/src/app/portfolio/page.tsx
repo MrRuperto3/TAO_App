@@ -169,6 +169,19 @@ type CronStatusResponse =
       error?: string;
     };
 
+type Severity = "INFO" | "WARN" | "CRITICAL";
+
+type Signal = {
+  id: string;
+  day: string;
+  netuid?: number;
+  severity: Severity;
+  type: string;
+  title: string;
+  why: string;
+  metrics?: Record<string, any>;
+};
+
 type SignalsResponse = {
   ok: boolean;
   day: string | null;
@@ -189,6 +202,76 @@ type SignalsResponse = {
     note?: string;
   };
 };
+
+function sevRank(s: Severity): number {
+  return s === "CRITICAL" ? 3 : s === "WARN" ? 2 : 1;
+}
+
+function sevStyles(s: Severity): { badge: string; dot: string; label: string } {
+  if (s === "CRITICAL") {
+    return {
+      label: "Critical",
+      badge: "border-red-500/30 bg-red-500/10 text-red-200",
+      dot: "bg-red-400",
+    };
+  }
+  if (s === "WARN") {
+    return {
+      label: "Warn",
+      badge: "border-amber-500/30 bg-amber-500/10 text-amber-200",
+      dot: "bg-amber-300",
+    };
+  }
+  return {
+    label: "Info",
+    badge: "border-sky-500/30 bg-sky-500/10 text-sky-200",
+    dot: "bg-sky-300",
+  };
+}
+
+function groupSignalsByNetuid(signals: Signal[]): Array<{
+  netuid: number | null;
+  worst: Severity;
+  signals: Signal[];
+}> {
+  const m = new Map<string, Signal[]>();
+
+  for (const s of signals) {
+    const key = s.netuid == null ? "portfolio" : String(s.netuid);
+    const arr = m.get(key) ?? [];
+    arr.push(s);
+    m.set(key, arr);
+  }
+
+  const groups: Array<{ netuid: number | null; worst: Severity; signals: Signal[] }> = [];
+
+  for (const [key, arr] of m.entries()) {
+    // Sort signals within group: severity desc, then title
+    arr.sort((a, b) => {
+      const d = sevRank(b.severity) - sevRank(a.severity);
+      if (d !== 0) return d;
+      return a.title.localeCompare(b.title);
+    });
+
+    const worst = arr[0]?.severity ?? "INFO";
+    groups.push({
+      netuid: key === "portfolio" ? null : Number(key),
+      worst,
+      signals: arr,
+    });
+  }
+
+  // Sort groups: worst severity desc, then netuid asc (portfolio group first if critical)
+  groups.sort((a, b) => {
+    const d = sevRank(b.worst) - sevRank(a.worst);
+    if (d !== 0) return d;
+    if (a.netuid == null) return -1;
+    if (b.netuid == null) return 1;
+    return a.netuid - b.netuid;
+  });
+
+  return groups;
+}
 
 
 async function getCronStatus(): Promise<CronStatusResponse> {
@@ -937,25 +1020,30 @@ export default async function PortfolioPage() {
               </div>
 
 
-              {/* Signals / Notifications */}
+              {/* Signals / Notifications (grouped by subnet) */}
               <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 shadow">
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <div className="text-sm font-medium text-zinc-100">Signals</div>
                     <div className="mt-1 text-xs text-zinc-500">
-                      Daily, snapshot-driven alerts for held subnets. (V1: flow-based signals are active; emission/value shocks may appear once history exists.)
+                      Daily, snapshot-driven alerts for held subnets.
+                      {signalsRes?.ok && signalsRes.day ? (
+                        <span className="text-zinc-600"> • day (UTC): {signalsRes.day}</span>
+                      ) : null}
                     </div>
                   </div>
 
                   <div className="text-xs text-zinc-500">
-                    {signalsRes?.ok && signalsRes.day ? `Day: ${signalsRes.day}` : "Unavailable"}
+                    {signalsRes?.ok ? `${(signalsRes.signals ?? []).length} signal(s)` : "Unavailable"}
                   </div>
                 </div>
 
                 {!signalsRes?.ok ? (
                   <div className="mt-4 text-sm text-zinc-400">
                     Could not load signals{" "}
-                    <span className="text-zinc-500">{signalsRes?.meta?.missing?.[0] ? `(${signalsRes.meta.missing[0]})` : ""}</span>
+                    <span className="text-zinc-500">
+                      {signalsRes?.meta?.missing?.[0] ? `(${signalsRes.meta.missing[0]})` : ""}
+                    </span>
                   </div>
                 ) : (signalsRes.signals ?? []).length === 0 ? (
                   <div className="mt-4 text-sm text-zinc-400">
@@ -966,6 +1054,7 @@ export default async function PortfolioPage() {
                   </div>
                 ) : (
                   <>
+                    {/* Counts row */}
                     {(() => {
                       const sigs = signalsRes.signals ?? [];
                       const counts = sigs.reduce(
@@ -997,42 +1086,78 @@ export default async function PortfolioPage() {
                       );
                     })()}
 
-                    {/* Mobile list */}
-                    <div className="mt-4 space-y-3 sm:hidden">
-                      {(signalsRes.signals ?? []).slice(0, 50).map((s) => {
-                        const badge =
-                          s.severity === "CRITICAL"
-                            ? "border-red-500/30 bg-red-500/10 text-red-200"
-                            : s.severity === "WARN"
-                            ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
-                            : "border-blue-500/30 bg-blue-500/10 text-blue-200";
+                    {/* Partial-data banner */}
+                    {signalsRes?.meta?.partial ? (
+                      <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-200">
+                        Partial data:{" "}
+                        <span className="text-amber-100">
+                          {(signalsRes.meta?.missing ?? []).slice(0, 6).join(" • ")}
+                          {(signalsRes.meta?.missing?.length ?? 0) > 6 ? " • …" : ""}
+                        </span>
+                      </div>
+                    ) : null}
 
-                        const name = s.netuid != null ? nameMap.get(s.netuid) ?? `Subnet ${s.netuid}` : "Portfolio";
+                    {/* Grouped cards */}
+                    <div className="mt-4 space-y-3">
+                      {groupSignalsByNetuid(signalsRes.signals ?? []).map((g) => {
+                        const worst = sevStyles(g.worst);
+                        const groupName =
+                          g.netuid == null ? "Portfolio" : nameMap.get(g.netuid) ?? `Subnet ${g.netuid}`;
 
                         return (
-                          <div key={s.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                          <div
+                            key={`signals:${g.netuid ?? "portfolio"}`}
+                            className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                          >
                             <div className="flex items-start justify-between gap-3">
                               <div>
-                                <div className="text-sm font-semibold text-gray-100">{s.title}</div>
-                                <div className="mt-1 text-xs text-gray-400">{name}</div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`h-2.5 w-2.5 rounded-full ${worst.dot}`} />
+                                  <div className="text-sm font-semibold text-zinc-100">
+                                    {groupName}
+                                    {g.netuid != null ? (
+                                      <span className="text-xs font-normal text-zinc-500"> • netuid {g.netuid}</span>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                <div className="mt-1 text-xs text-zinc-500">{g.signals.length} alert(s)</div>
                               </div>
-                              <span className={`rounded-full border px-2 py-1 text-[11px] ${badge}`}>{s.severity}</span>
+
+                              <span className={["text-xs rounded-full px-2 py-1 border", worst.badge].join(" ")}>
+                                {worst.label}
+                              </span>
                             </div>
 
-                            <div className="mt-2 text-xs text-gray-300">{s.why}</div>
+                            <div className="mt-3 space-y-2">
+                              {g.signals.slice(0, 4).map((s) => {
+                                const st = sevStyles(s.severity);
 
-                            {s.netuid != null ? (
-                              <div className="mt-2 text-[11px] text-gray-500">
-                                NetUID: <span className="text-gray-300 tabular-nums">{s.netuid}</span>
-                              </div>
-                            ) : null}
+                                return (
+                                  <div key={s.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="text-sm text-zinc-100">{s.title}</div>
+                                      <span
+                                        className={["text-[11px] rounded-full px-2 py-0.5 border", st.badge].join(" ")}
+                                      >
+                                        {st.label}
+                                      </span>
+                                    </div>
+                                    <div className="mt-1 text-xs text-zinc-500">{s.why}</div>
+                                  </div>
+                                );
+                              })}
+
+                              {g.signals.length > 4 ? (
+                                <div className="text-xs text-zinc-500">+{g.signals.length - 4} more…</div>
+                              ) : null}
+                            </div>
                           </div>
                         );
                       })}
                     </div>
 
-                    {/* Desktop table */}
-                    <div className="mt-4 hidden overflow-x-auto [-webkit-overflow-scrolling:touch] sm:block">
+                    {/* Full table (desktop) */}
+                    <div className="mt-5 hidden overflow-x-auto [-webkit-overflow-scrolling:touch] sm:block">
                       <table className="w-full text-left text-sm">
                         <thead className="text-xs text-zinc-500">
                           <tr>
@@ -1078,6 +1203,7 @@ export default async function PortfolioPage() {
                   </>
                 )}
               </div>
+  
 
 
               {/* Snapshot Alpha Earned (from stored snapshots) */}
